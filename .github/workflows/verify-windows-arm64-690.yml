@@ -1,0 +1,89 @@
+name: Verify Windows ARM64 wheels for scikit-build-core issue 690
+
+on:
+  push:
+    branches: [verify-windows-arm64-690]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.abi }} on ${{ matrix.host.os }}
+    runs-on: ${{ matrix.host.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [cp311, cp312]
+        host:
+          - {mode: native, os: windows-11-arm}
+          - {mode: cross, os: windows-latest}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: wjakob/nanobind_example
+          ref: 03bd872fdb8f34f7ddb68ced81e4dc2ce08283c7
+          path: example
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+      - run: python .github/diagnostics/windows_arm64_wheels.py pin
+      - run: python -m pip install cibuildwheel==4.3.5
+      - run: python -m cibuildwheel example --only ${{ matrix.abi }}-win_arm64 --output-dir wheelhouse
+      - name: Record backend and binding extension suffixes
+        if: always()
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path example -Recurse -File -Include CMakeCache.txt,CMakeInit.txt |
+            Select-String -Pattern '^(SKBUILD_SOABI|SKBUILD_SOSABI|NB_SUFFIX|NB_SUFFIX_S|CMAKE_GENERATOR_PLATFORM):|^set\(SKBUILD_SO(S)?ABI '
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheel-${{ matrix.host.mode }}-${{ matrix.abi }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+          retention-days: 14
+
+  import:
+    name: Install both wheels on ARM64 with CPython ${{ matrix.python }}
+    needs: build
+    if: always() && !cancelled()
+    runs-on: windows-11-arm
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {python: '3.11.9', abi: cp311}
+          - {python: '3.12.10', abi: cp312}
+          - {python: '3.13.14', abi: cp312}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: wjakob/nanobind_example
+          ref: 03bd872fdb8f34f7ddb68ced81e4dc2ce08283c7
+          path: example
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: arm64
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: wheel-*-${{ matrix.abi }}
+          path: artifacts
+      - run: python .github/diagnostics/windows_arm64_wheels.py ${{ matrix.abi }}
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: import-${{ matrix.python }}
+          path: arm64-results.json
+          if-no-files-found: warn
+          retention-days: 14
