@@ -58,6 +58,24 @@ def test_wheel(wheel: Path, fixture: Path, expected_tag: str) -> dict:
             record[label] = run.returncode
             if label == "install" and run.returncode:
                 break
+        installed = directory / "env" / "Lib" / "site-packages" / record["extension"]
+        expected_name = "nanobind_example_ext" + sysconfig.get_config_var("EXT_SUFFIX")
+        if (record.get("install") == 0 and record.get("import") != 0
+                and record["pe_machine"] == "0xaa64" and installed.name != expected_name):
+            renamed = installed.with_name(expected_name)
+            if renamed.exists():
+                raise ValueError(f"Another extension already uses {expected_name}")
+            original_digest = hashlib.sha256(installed.read_bytes()).hexdigest()
+            installed.rename(renamed)
+            digest = hashlib.sha256(renamed.read_bytes()).hexdigest()
+            if digest != original_digest:
+                raise ValueError("The installed extension changed during rename")
+            control = {"name": expected_name, "binary_sha256": digest}
+            for label, command in zip(("import", "pytest"), commands[1:]):
+                run = subprocess.run(command, cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                print(run.stdout, flush=True)
+                control[label] = run.returncode
+            record["renamed_in_temporary_environment"] = control
     name = Path(record["extension"]).name
     expected_names = {"nanobind_example_ext" + suffix for suffix in importlib.machinery.EXTENSION_SUFFIXES}
     record["ok"] = (name in expected_names and record["pe_machine"] == "0xaa64"
