@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build:
@@ -22,6 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: probe
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -32,8 +34,11 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.13'
-      - run: python .github/diagnostics/windows_arm64_wheels.py pin
+      - run: python probe/.github/diagnostics/windows_arm64_wheels.py pin
       - run: python -m pip install cibuildwheel==4.3.5
+      - name: Apply the project-side suffix override to the cross-build control
+        if: matrix.host.mode == 'cross'
+        run: python probe/.github/diagnostics/windows_arm64_wheels.py override
       - name: Keep the cross-built wheel for repair on ARM64
         if: matrix.host.mode == 'cross'
         shell: pwsh
@@ -41,6 +46,8 @@ jobs:
           'CIBW_REPAIR_WHEEL_COMMAND_WINDOWS=python -c "import shutil,sys; shutil.copy2(sys.argv[1],sys.argv[2])" "{wheel}" "{dest_dir}"' >> $env:GITHUB_ENV
       - name: Build and test the example
         working-directory: example
+        env:
+          CIBW_TEST_COMMAND_WINDOWS: python -I -m pytest -q -c "{project}/pyproject.toml" --import-mode=importlib "{project}/tests"
         run: python -m cibuildwheel . --only ${{ matrix.abi }}-win_arm64 --output-dir ../wheelhouse
       - name: Record backend and binding extension suffixes
         if: always()
@@ -82,13 +89,13 @@ jobs:
           python -m delvewheel repair -v -w repaired $wheel.FullName
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: wheel-cross-${{ matrix.abi }}
+          name: wheel-override-${{ matrix.abi }}
           path: repaired/*.whl
           if-no-files-found: error
           retention-days: 14
 
   import:
-    name: Install both wheels on ARM64 with CPython ${{ matrix.python }}
+    name: Compare installed wheels on ARM64 with CPython ${{ matrix.python }}
     needs: [build, repair]
     if: always() && !cancelled()
     runs-on: windows-11-arm
@@ -103,6 +110,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: probe
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -116,9 +124,19 @@ jobs:
           architecture: arm64
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: wheel-*-${{ matrix.abi }}
-          path: artifacts
-      - run: python .github/diagnostics/windows_arm64_wheels.py ${{ matrix.abi }}
+          name: wheel-native-${{ matrix.abi }}
+          path: artifacts/wheel-native-${{ matrix.abi }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: wheel-override-${{ matrix.abi }}
+          path: artifacts/wheel-override-${{ matrix.abi }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: wheel-cross-${{ matrix.abi }}
+          path: artifacts/wheel-cross-${{ matrix.abi }}
+          run-id: 44915900406
+          github-token: ${{ github.token }}
+      - run: python probe/.github/diagnostics/windows_arm64_wheels.py ${{ matrix.abi }}
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

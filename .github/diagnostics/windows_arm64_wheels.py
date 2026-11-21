@@ -25,6 +25,20 @@ def pin_backend(example: Path) -> None:
     pyproject.write_text(old.replace(original, pins), encoding="utf-8")
 
 
+def override_suffix(example: Path) -> None:
+    cmake = example / "CMakeLists.txt"
+    source = cmake.read_text(encoding="utf-8")
+    anchor = "install(TARGETS nanobind_example_ext"
+    if source.count(anchor) != 1:
+        raise ValueError("The example's CMake install target has changed")
+    override = """if(WIN32 AND DEFINED ENV{SETUPTOOLS_EXT_SUFFIX} AND SKBUILD_SOABI)
+  set_target_properties(nanobind_example_ext PROPERTIES SUFFIX ".${SKBUILD_SOABI}.pyd")
+endif()
+
+"""
+    cmake.write_text(source.replace(anchor, override + anchor), encoding="utf-8")
+
+
 def inspect_wheel(wheel: Path) -> dict:
     with zipfile.ZipFile(wheel) as archive:
         extension, = [n for n in archive.namelist() if n.endswith(".pyd")]
@@ -50,7 +64,7 @@ def test_wheel(wheel: Path, fixture: Path, expected_tag: str) -> dict:
         commands = [
             [str(py), "-m", "pip", "install", "--disable-pip-version-check", str(wheel), "pytest==8.4.2"],
             [str(py), "-I", "-c", "from nanobind_example import nanobind_example_ext as ext; print(ext.__file__, ext.add(1, 2)); assert ext.add(1, 2) == 3"],
-            [str(py), "-I", "-m", "pytest", "-q", "--import-mode=importlib", str(fixture)],
+            [str(py), "-I", "-m", "pytest", "-q", "-c", str(fixture.parent / "pyproject.toml"), "--import-mode=importlib", str(fixture)],
         ]
         for label, cmd in zip(("install", "import", "pytest"), commands):
             run = subprocess.run(cmd, cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -92,7 +106,7 @@ def verify(abi: str) -> None:
         raise RuntimeError(f"Expected native ARM64 Windows, got {host}")
     tag = {"cp311": "cp311-cp311-win_arm64", "cp312": "cp312-abi3-win_arm64"}[abi]
     results = {}
-    for mode in ("native", "cross"):
+    for mode in ("native", "cross", "override"):
         try:
             directory = Path("artifacts") / f"wheel-{mode}-{abi}"
             wheel, = directory.glob("*.whl")
@@ -102,12 +116,23 @@ def verify(abi: str) -> None:
     receipt = json.dumps({"host": host, "wheels": results}, indent=2)
     print(receipt, flush=True)
     Path("arm64-results.json").write_text(receipt + "\n", encoding="utf-8")
-    if not all(row["ok"] for row in results.values()):
+    baseline = results["cross"]
+    if abi == "cp311":
+        rename = baseline.get("renamed_in_temporary_environment", {})
+        baseline_matches = (baseline.get("install") == 0 and baseline.get("import") == 1
+                            and baseline.get("pytest", 0) != 0 and baseline.get("pe_machine") == "0xaa64"
+                            and baseline.get("extension", "").endswith(".cp311-win_amd64.pyd")
+                            and rename.get("import") == 0 and rename.get("pytest") == 0)
+    else:
+        baseline_matches = baseline["ok"]
+    if not (baseline_matches and results["native"]["ok"] and results["override"]["ok"]):
         raise SystemExit(1)
 
 
 if __name__ == "__main__":
     if sys.argv[1] == "pin":
         pin_backend(Path("example"))
+    elif sys.argv[1] == "override":
+        override_suffix(Path("example"))
     else:
         verify(sys.argv[1])
